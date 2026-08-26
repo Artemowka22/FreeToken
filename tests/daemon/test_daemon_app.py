@@ -1,4 +1,4 @@
-"""Tests for /bench/run child-process ownership."""
+"""Tests for daemon app request models and /bench/run child-process ownership."""
 
 from __future__ import annotations
 
@@ -9,10 +9,11 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pydantic
 import pytest
 
 from freetoken.daemon import app as app_mod
-from freetoken.daemon.app import BenchBody, build_app
+from freetoken.daemon.app import BenchBody, CheckpointBody, StartBody, build_app
 from freetoken.daemon.logring import LogRing
 
 
@@ -106,6 +107,37 @@ async def _collect(body, bench_run) -> list[tuple[str, dict]]:
                 data = json.loads(line[len("data: ") :])
         out.append((event, data))
     return out
+
+
+# --------------------------------------------------------------------------- request models
+
+
+def test_start_body_port_bounds():
+    with pytest.raises(pydantic.ValidationError):
+        StartBody(model="m", port=0)
+    with pytest.raises(pydantic.ValidationError):
+        StartBody(model="m", port=-1)
+    with pytest.raises(pydantic.ValidationError):
+        StartBody(model="m", port=65536)
+    assert StartBody.model_validate({"model": "m"}).port is None
+    assert StartBody(model="m", port=1).port == 1
+    assert StartBody(model="m", port=65535).port == 65535
+
+
+def test_invalid_port_fails_before_manager_start():
+    with pytest.raises(pydantic.ValidationError):
+        StartBody.model_validate({"model": "m", "port": 70000})
+    assert _Mgr().status().get("running") is False
+
+
+@pytest.mark.parametrize("cls", [StartBody, CheckpointBody, BenchBody])
+def test_list_defaults_are_independent(cls):
+    kwargs = {"model": "m"} if cls is StartBody else {"id": "x"} if cls is CheckpointBody else {}
+    a = cls.model_validate(kwargs)
+    b = cls.model_validate(kwargs)
+    a.args.append("--dtype")
+    assert b.args == []
+    assert cls.model_validate(kwargs).args == []
 
 
 # --------------------------------------------------------------------------- bench SSE frames
